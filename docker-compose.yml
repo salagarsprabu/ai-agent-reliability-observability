@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agentops}
+      POSTGRES_USER: ${POSTGRES_USER:-agentops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentops}
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentops -d agentops"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/jaeger:2.10.0
+    ports:
+      - "16686:16686"
+      - "4317"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.138.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "13133:13133"
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  customer-api:
+    build: ./customer-api
+    environment:
+      OTEL_SERVICE_NAME: customer-profile-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=development,service.version=0.1.0
+      CUSTOMER_HASH_SALT: ${CUSTOMER_HASH_SALT:-local-lab-only-change-me}
+    ports: ["8001:8001"]
+    depends_on: [otel-collector]
+
+  risk-api:
+    build: ./risk-api
+    environment:
+      OTEL_SERVICE_NAME: risk-assessment-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=development,service.version=0.1.0
+      RISK_TIMEOUT_SECONDS: ${RISK_TIMEOUT_SECONDS:-3}
+    ports: ["8002:8002"]
+    depends_on: [otel-collector]
+
+  agent:
+    build: ./agent
+    environment:
+      OTEL_SERVICE_NAME: loan-support-agent
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=development,service.version=0.1.0
+      DATABASE_URL: postgresql+psycopg://agentops:agentops@postgres:5432/agentops
+      CUSTOMER_API_URL: http://customer-api:8001
+      RISK_API_URL: http://risk-api:8002
+      RISK_CLIENT_TIMEOUT_SECONDS: ${RISK_CLIENT_TIMEOUT_SECONDS:-2}
+      CUSTOMER_HASH_SALT: ${CUSTOMER_HASH_SALT:-local-lab-only-change-me}
+    ports: ["8000:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      customer-api:
+        condition: service_started
+      risk-api:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+volumes:
+  postgres_data:
