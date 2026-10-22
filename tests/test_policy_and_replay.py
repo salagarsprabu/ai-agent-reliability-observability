@@ -1,4 +1,5 @@
 import sys
+from app.evaluations import evaluate_task_completion
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "agent"))
 
@@ -44,3 +45,16 @@ def test_counterfactual_reuses_recorded_outcomes():
     assert outcome == "degraded_success"
     assert comparison["same_recorded_tool_outcomes"] is True
     assert comparison["external_services_called"] is False
+def test_degraded_success_has_higher_task_score():
+    result = evaluate_task_completion("degraded_success")
+
+    assert result["score"] == 0.8
+    assert result["label"] == "degraded_success"
+    assert result["evaluator_version"] == "1.1.0"
+
+
+def test_degraded_has_partial_task_score():
+    result = evaluate_task_completion("degraded")
+
+    assert result["score"] == 0.5
+    assert result["label"] == "degraded"
