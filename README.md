@@ -1,57 +1,27 @@
 # AI Agent Reliability, Observability, Replay and Evaluation
 
-A production-oriented reference implementation demonstrating how an enterprise AI agent can be **observed, diagnosed, evaluated, reconstructed, and tested for resilience** using distributed tracing and persisted execution evidence.
+A production-oriented reference implementation showing how an enterprise AI agent can be **observed, diagnosed, evaluated, reconstructed, replayed, and tested for resilience**.
 
-The reference scenario is a banking loan-support agent that invokes Customer Profile and Risk Assessment services. The platform captures the complete execution path, introduces controlled failures, attributes faults to the responsible dependency, evaluates agent behavior, reconstructs historical sessions, and compares outcomes under an alternative resilience policy.
+The reference scenario is a banking loan-support agent that calls Customer Profile and Risk Assessment services. The platform captures the execution path with OpenTelemetry, routes traces through an OpenTelemetry Collector to Jaeger, stores replay evidence and evaluations in PostgreSQL, and provides an AI Reliability Operations Console for session investigation and counterfactual policy analysis.
 
-> **Project status:** Hands-on reference implementation for learning and architecture validation. It is not a production banking platform.
-
----
-
-## Table of Contents
-
-- [Problem Statement](#problem-statement)
-- [Reference Scenario](#reference-scenario)
-- [Architecture](#architecture)
-- [Architecture Principles](#architecture-principles)
-- [Runtime Components](#runtime-components)
-- [Technology Stack](#technology-stack)
-- [Repository Structure](#repository-structure)
-- [Getting Started](#getting-started)
-- [Start the Platform](#start-the-platform)
-- [Verify Service Health](#verify-service-health)
-- [Scenario 1: Healthy Agent Execution](#scenario-1-healthy-agent-execution)
-- [Inspect the Distributed Trace](#inspect-the-distributed-trace)
-- [Scenario 2: Risk Assessment Timeout](#scenario-2-risk-assessment-timeout)
-- [Reliability Insight](#reliability-insight)
-- [Inspect Stored Evidence](#inspect-stored-evidence)
-- [Historical Reconstruction](#historical-reconstruction)
-- [Controlled and Counterfactual Replay](#controlled-and-counterfactual-replay)
-- [Agent Evaluations](#agent-evaluations)
-- [Telemetry Privacy](#telemetry-privacy)
-- [Automated Tests](#automated-tests)
-- [Troubleshooting](#troubleshooting)
-- [Acceptance Criteria](#acceptance-criteria)
-- [Current Limitations](#current-limitations)
-- [Roadmap](#roadmap)
-- [Why This Project Exists](#why-this-project-exists)
+> **Project status:** Hands-on reference implementation for learning and architecture validation. This is not a production banking platform.
 
 ---
 
-## Problem Statement
+## What This Project Demonstrates
 
-Traditional application monitoring can identify infrastructure and API failures, but AI agents introduce additional operational questions:
-
-- What customer request initiated the interaction?
-- What execution plan did the agent create?
-- Which tools and APIs were invoked?
-- Which model, tool, API, or policy caused the failure?
-- Did the agent handle the failure safely?
-- Was the requested business task completed?
-- Can the historical interaction be reconstructed?
-- Would a different resilience policy have produced a better outcome?
-
-This implementation explores those questions through a controlled banking loan-assessment workflow.
+- A real multi-service loan-support agent workflow
+- Healthy, timeout, unavailable-service, and malformed-response scenarios
+- OpenTelemetry instrumentation and W3C trace-context propagation
+- OTLP telemetry routing through the OpenTelemetry Collector
+- Distributed trace investigation in Jaeger
+- Persisted sessions, events, evaluations, and replay evidence in PostgreSQL
+- Historical reconstruction without calling live tools
+- Controlled replay using recorded tool outcomes
+- Counterfactual replay using an alternative policy
+- Rule-based agent evaluations with evaluator versioning
+- A web-based AI Reliability Operations Console
+- Initial safe-outcome SLI and provisional SLO views
 
 ---
 
@@ -61,16 +31,16 @@ A customer asks:
 
 > “Can I increase my personal-loan limit from $20,000 to $45,000?”
 
-The Loan Support Agent performs the following workflow:
+The Loan Support Agent:
 
 1. Classifies the customer intent.
 2. Creates an execution plan.
 3. Retrieves the customer profile.
 4. Calls the Risk Assessment service.
 5. Applies the lending-response policy.
-6. Generates a verified or degraded customer response.
-7. Evaluates the interaction.
-8. Persists evidence for reconstruction and replay.
+6. Generates a verified or degraded response.
+7. Runs agent-specific evaluations.
+8. Persists evidence needed for reconstruction and replay.
 
 ### Healthy path
 
@@ -93,7 +63,7 @@ Policy Check               PASS
 Customer Response          SUCCESS
 ```
 
-### Failure path
+### Timeout path
 
 ```text
 Customer Request
@@ -105,7 +75,7 @@ Loan Agent
 Customer Profile API       HTTP 200
       |
       v
-Risk Assessment API        TIMEOUT / 504-style failure
+Risk Assessment API        TIMEOUT
       |
       v
 Fallback                   ACTIVATED
@@ -122,199 +92,216 @@ Customer Response          DEGRADED BUT SAFE
 ## Architecture
 
 ```text
-                           Test Client
+                         Windows Browser
                                |
-                               v
-                    +-----------------------+
-                    | Loan Support Agent    |
-                    | Port 8000             |
-                    +-----------+-----------+
-                                |
-                 +--------------+--------------+
-                 |                             |
-                 v                             v
-      +----------------------+      +----------------------+
-      | Customer Profile API |      | Risk Assessment API  |
-      | Port 8001            |      | Port 8002            |
-      | HTTP 200             |      | HTTP 200 / timeout   |
-      +----------------------+      +----------------------+
+                        SSH local tunnels
+                     8000              16686
+                       |                  |
+                       v                  v
+              AI Reliability UI        Jaeger UI
+                       |                  ^
+                       | REST APIs        | OTLP
+                       v                  |
+                Loan Support Agent       |
+                    Port 8000            |
+                       |                 |
+             +---------+---------+       |
+             |                   |       |
+             v                   v       |
+   Customer Profile API   Risk Assessment API
+        Port 8001              Port 8002
+             |                   |
+             +---------+---------+
+                       |
+                Business outcome
 
-                    BUSINESS EXECUTION PATH
+All application services
+          |
+   OpenTelemetry SDK
+          |
+      OTLP/HTTP
+          v
+OpenTelemetry Collector
+   Ports 4317 / 4318
+          |
+          v
+        Jaeger
 
-
-                    OBSERVABILITY PATH
-
-     Agent + Customer API + Risk API
-                    |
-             OpenTelemetry SDK
-                    |
-                OTLP/HTTP
-                    v
-          +-----------------------+
-          | OTel Collector        |
-          | Ports 4317 / 4318     |
-          | Redact / Batch / Route|
-          +-----------+-----------+
-                      |
-                      v
-              +---------------+
-              | Jaeger        |
-              | UI Port 16686 |
-              +---------------+
-
-
-                    EVIDENCE PATH
-
-              Loan Support Agent
-                      |
-                      v
-              +----------------+
-              | PostgreSQL     |
-              | Port 5432      |
-              +-------+--------+
-                      |
-       +--------------+----------------+
-       |              |                |
-       v              v                v
-    Sessions        Events         Evaluations
-                      |
-                      v
-         Reconstruction and Replay
+Loan Support Agent
+          |
+          v
+      PostgreSQL
+          |
+  Sessions / Events / Evaluations
+          |
+ Reconstruction / Replay / Comparison
 ```
 
 ---
 
-## Architecture Principles
+## Three Architectural Paths
 
-The implementation deliberately separates three concerns.
+### Business execution path
 
-### Business execution
+```text
+Customer → Agent → Customer API → Risk API → Policy → Response
+```
 
-- Agent orchestration
-- Tool and API invocation
-- Policy enforcement
-- Fallback handling
-- Customer response generation
+### Observability path
 
-### Observability
+```text
+Services → OpenTelemetry SDK → OTLP → Collector → Jaeger
+```
 
-- Distributed traces
-- Parent-child span relationships
-- Latency and errors
-- Tool and API dependencies
-- Failure attribution
-- Hashed correlation identifiers
+### Evidence and replay path
 
-### Replay and evaluation evidence
+```text
+Agent → PostgreSQL → Reconstruction / Replay / Counterfactual analysis
+```
 
-- Session state
-- Ordered execution events
-- Recorded tool outcomes
-- Agent and policy versions
-- Evaluation results
-- Replay runs and comparisons
-
-**Jaeger is used for operational trace investigation. PostgreSQL is the evidence store used for reconstruction and controlled replay.** A trace can show what happened technically, but it does not automatically contain all the state required to reproduce a historical decision path.
+Jaeger is the technical trace-investigation backend. PostgreSQL is the evidence store used for reconstruction, evaluator results, and controlled replay. The Operations Console brings the business and reliability evidence together without attempting to replace Jaeger.
 
 ---
 
 ## Runtime Components
 
-### 1. Loan Support Agent
+### Loan Support Agent
 
-**Container:** `agent`  
-**Port:** `8000`
+- Container: `agent`
+- Port: `8000`
+- Accepts agent requests
+- Creates sessions and spans
+- Calls downstream tools
+- Applies policies and fallbacks
+- Runs evaluations
+- Persists replay evidence
+- Hosts the Operations Console under `/ui/`
 
-Responsibilities:
+### Customer Profile API
 
-- Accept customer requests
-- Create session and trace context
-- Classify customer intent
-- Generate an execution plan
-- Invoke downstream tools
-- Apply lending-response policies
-- Produce fallback behavior
-- Run rule-based evaluations
-- Persist replay evidence
+- Container: `customer-api`
+- Port: `8001`
+- Returns simulated customer information
+- Produces server-side OpenTelemetry spans
 
-### 2. Customer Profile API
+### Risk Assessment API
 
-**Container:** `customer-api`  
-**Port:** `8001`
+- Container: `risk-api`
+- Port: `8002`
+- Produces healthy lending decisions
+- Supports controlled timeout and malformed-response modes
 
-Represents a healthy downstream banking dependency. It returns the customer information required by the loan-assessment workflow.
+### OpenTelemetry Collector
 
-### 3. Risk Assessment API
+- Container: `otel-collector`
+- OTLP/gRPC: `4317`
+- OTLP/HTTP: `4318`
+- Health check: `13133`
+- Receives, processes, filters, batches, and exports telemetry
 
-**Container:** `risk-api`  
-**Port:** `8002`
+### Jaeger
 
-Performs the simulated underwriting decision and supports controlled failure modes:
+- Container: `jaeger`
+- UI port: `16686`
+- Displays distributed traces, spans, latency, dependencies, and errors
 
-- `none`: healthy response
-- `risk_timeout`: response delay exceeding the agent timeout
-- `malformed`: HTTP success with an invalid response schema
+### PostgreSQL
 
-This service is the primary fault-injection point for reliability testing.
+- Container: `postgres`
+- Port: `5432`
+- Stores sessions, events, evaluations, replay envelopes, and comparisons
 
-### 4. OpenTelemetry Collector
+---
 
-**Container:** `otel-collector`  
-**Ports:** `4317` for OTLP/gRPC, `4318` for OTLP/HTTP, `13133` for health
+## AI Reliability Operations Console
 
-Responsibilities:
+The repository includes a web UI inspired by enterprise observability consoles but connected to the real backend APIs in this project.
 
-- Receive OTLP telemetry
-- Apply configured privacy filtering
-- Protect memory usage
-- Batch spans
-- Export traces to Jaeger
-- Emit development debug telemetry
+### UI capabilities
 
-### 5. Jaeger
+#### Overview
 
-**Container:** `jaeger`  
-**UI port:** `16686`
+- Total persisted sessions
+- Successful interactions
+- Degraded and degraded-success outcomes
+- Dependency/tool-failure count
+- Safe-outcome rate
+- Recent sessions
+- Outcome distribution
 
-Provides investigation of:
+#### Session Explorer
 
-- Distributed traces
-- Parent-child span relationships
-- Tool and API calls
-- Latency and error evidence
-- Execution waterfalls
+Search and inspect sessions using:
 
-### 6. PostgreSQL
+- Session ID
+- Conversation ID
+- Agent status
+- Failure mode
+- Agent version
+- Policy version
 
-**Container:** `postgres`  
-**Port:** `5432`
+#### Session Detail
 
-Persists:
+- Session and trace IDs
+- Agent, policy, and evaluator lineage
+- Ordered execution timeline
+- Tool failures and durations
+- Task, tool, policy, and fallback evaluations
+- Final customer response
+- Link to Jaeger for detailed trace investigation
 
-- Sessions
-- Ordered execution events
-- Evaluations
-- Replay envelopes
-- Policy versions
-- Replay runs
-- Before-and-after comparisons
+#### Replay Studio
+
+- Historical reconstruction
+- Controlled replay with Policy v1
+- Counterfactual replay with Policy v2
+- Raw replay evidence
+- Original-versus-replay comparison
+- Verification that recorded tool outcomes were reused
+- Verification that external services were not called
+
+#### Reliability and SLO
+
+- Safe-outcome SLI
+- Verified-success rate
+- Dependency-failure exposure
+- Provisional 97% safe-outcome target
+- Insufficient-sample warning for small datasets
+
+### Important UI boundary
+
+```text
+Operations Console
+  ├── Sessions
+  ├── Evaluations
+  ├── Reconstruction
+  ├── Replay
+  ├── Counterfactual comparison
+  └── Reliability scorecard
+
+Jaeger
+  └── Detailed distributed trace investigation
+```
+
+The UI does not claim capabilities that are not implemented. It does not display synthetic RAG, ChromaDB, LLM token-cost, or golden-dataset benchmark data.
 
 ---
 
 ## Technology Stack
 
-- **Application language:** Python 3.12
-- **API framework:** FastAPI
-- **HTTP client:** httpx
-- **Tracing:** OpenTelemetry Python SDK
-- **Telemetry protocol:** OTLP/HTTP
-- **Telemetry gateway:** OpenTelemetry Collector Contrib
-- **Trace backend:** Jaeger
-- **Evidence store:** PostgreSQL 16
-- **ORM:** SQLAlchemy
-- **Database driver:** psycopg
-- **Testing:** pytest
-- **Runtime:** Docker and Docker Compose
+- Python 3.12
+- FastAPI
+- httpx
+- SQLAlchemy
+- psycopg
+- PostgreSQL 16
+- OpenTelemetry Python SDK
+- OpenTelemetry Collector Contrib
+- OTLP/HTTP and OTLP/gRPC
+- Jaeger
+- Docker and Docker Compose
+- HTML, CSS, and JavaScript Operations Console
+- pytest
 
 ---
 
@@ -334,35 +321,21 @@ ai-agent-observability-replay/
 |       |-- replay.py
 |       |-- db.py
 |       |-- schemas.py
-|       `-- config.py
+|       |-- config.py
+|       `-- static/
+|           `-- index.html
 |-- customer-api/
-|   |-- Dockerfile
-|   |-- requirements.txt
-|   `-- app/
-|       |-- main.py
-|       `-- telemetry.py
 |-- risk-api/
-|   |-- Dockerfile
-|   |-- requirements.txt
-|   `-- app/
-|       |-- main.py
-|       `-- telemetry.py
 |-- otel-collector/
-|   `-- config.yaml
 |-- scripts/
 |   |-- healthy-run.sh
 |   |-- timeout-run.sh
 |   |-- reconstruct.sh
 |   `-- counterfactual.sh
 |-- tests/
-|   |-- requirements.txt
-|   `-- test_policy_and_replay.py
 |-- docs/
-|   |-- ARCHITECTURE.md
-|   `-- ACCEPTANCE-CRITERIA.md
 |-- docker-compose.yml
 |-- .env.example
-|-- Makefile
 |-- SECURITY.md
 |-- VALIDATION.md
 `-- README.md
@@ -370,43 +343,28 @@ ai-agent-observability-replay/
 
 ---
 
-## Getting Started
-
-### Prerequisites
+## Prerequisites
 
 - Ubuntu 22.04 or later, or a compatible Linux environment
 - Docker Engine
 - Docker Compose v2
-- `curl`
 - Git
-- Python 3 for JSON formatting and local tests
+- curl
+- Python 3
+- SSH access when running on a remote VM
 
-### Clone the repository
+---
 
-```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/ai-agent-observability-replay.git
-cd ai-agent-observability-replay
-```
-
-### Create local configuration
+## Clone and Configure
 
 ```bash
+git clone https://github.com/salagarsprabu/ai-agent-reliability-observability.git
+cd ai-agent-reliability-observability
 cp .env.example .env
-```
-
-The `.env` file is excluded by `.gitignore`. Do not commit passwords, tokens, private keys, or real customer data.
-
-### Ensure utility scripts are executable
-
-Files copied from Windows may not retain Linux executable permissions.
-
-```bash
 chmod +x scripts/*.sh
 ```
 
-### Ubuntu Python command
-
-The scripts should use `python3 -m json.tool`. If they contain `python -m json.tool`, update them:
+If scripts contain `python -m json.tool`, update them for Ubuntu:
 
 ```bash
 sed -i 's/python -m json.tool/python3 -m json.tool/g' scripts/*.sh
@@ -414,27 +372,21 @@ sed -i 's/python -m json.tool/python3 -m json.tool/g' scripts/*.sh
 
 ---
 
-## Start the Platform
+## Build and Start
 
-### Validate the Compose definition
+Validate Compose:
 
 ```bash
 docker compose config
 ```
 
-### Build application images
+Build and start all services:
 
 ```bash
-docker compose build
+docker compose up -d --build
 ```
 
-### Start all six containers
-
-```bash
-docker compose up -d
-```
-
-### Verify the runtime
+Check the runtime:
 
 ```bash
 docker compose ps
@@ -451,61 +403,84 @@ jaeger
 postgres
 ```
 
-PostgreSQL should eventually report `healthy`.
-
-### View startup logs
-
-```bash
-docker compose logs --tail=50 agent
-docker compose logs --tail=50 customer-api
-docker compose logs --tail=50 risk-api
-docker compose logs --tail=50 otel-collector
-docker compose logs --tail=50 jaeger
-docker compose logs --tail=50 postgres
-```
-
 ---
 
-## Verify Service Health
+## Verify Health
 
-### Loan Support Agent
+Agent:
 
 ```bash
 curl -sS http://localhost:8000/health | python3 -m json.tool
 ```
 
-### Customer Profile API
+Customer Profile API:
 
 ```bash
 curl -sS http://localhost:8001/health | python3 -m json.tool
 ```
 
-### Risk Assessment API
+Risk Assessment API:
 
 ```bash
 curl -sS http://localhost:8002/health | python3 -m json.tool
 ```
 
-Expected structure:
+Collector:
 
-```json
-{
-  "status": "ok",
-  "service": "service-name"
-}
+```bash
+curl -i http://localhost:13133/
+```
+
+A successful health response proves that a component is responding. It does not by itself prove that the complete business and telemetry flows are working.
+
+---
+
+## Access the UI and Jaeger from Windows
+
+Do not expose the application or Jaeger ports publicly. Use SSH local forwarding:
+
+```powershell
+ssh `
+  -L 8000:localhost:8000 `
+  -L 16686:localhost:16686 `
+  azureuser@salagarsvm1.eastus.cloudapp.azure.com
+```
+
+Keep the PowerShell window open.
+
+Open the Operations Console:
+
+```text
+http://localhost:8000/ui/
+```
+
+The root URL also redirects to the UI:
+
+```text
+http://localhost:8000
+```
+
+Open Jaeger:
+
+```text
+http://localhost:16686
+```
+
+Open FastAPI Swagger:
+
+```text
+http://localhost:8000/docs
 ```
 
 ---
 
 ## Scenario 1: Healthy Agent Execution
 
-Execute the predefined healthy request:
-
 ```bash
 ./scripts/healthy-run.sh
 ```
 
-Expected high-level outcome:
+Expected result:
 
 ```text
 Agent outcome            SUCCESS
@@ -517,161 +492,49 @@ Policy compliance        PASS
 Fallback effectiveness   PASS
 ```
 
-Example response structure:
-
-```json
-{
-  "session_id": "sess-generated-id",
-  "conversation_id": "conv-healthy-001",
-  "trace_id": "generated-otel-trace-id",
-  "status": "success",
-  "response": "Your request is eligible for a loan limit up to $45,000, subject to final verification.",
-  "evaluations": {
-    "task_completion": {
-      "score": 1.0,
-      "label": "pass"
-    },
-    "tool_execution": {
-      "score": 1.0,
-      "label": "pass"
-    },
-    "policy_compliance": {
-      "score": 1.0,
-      "label": "pass"
-    },
-    "fallback_effectiveness": {
-      "score": 1.0,
-      "label": "pass"
-    }
-  }
-}
-```
-
----
-
-## Inspect the Distributed Trace
-
-Open Jaeger locally:
-
-```text
-http://localhost:16686
-```
-
-If the platform runs on a remote VM, create an SSH tunnel from your local workstation:
-
-```bash
-ssh -L 16686:localhost:16686 USER@REMOTE_HOST
-```
-
-Then open:
-
-```text
-http://localhost:16686
-```
-
-In Jaeger:
-
-1. Select `loan-support-agent`.
-2. Search for recent traces.
-3. Open the latest trace.
-4. Inspect the agent, tool, HTTP, policy, evaluation, and response spans.
-
-Expected logical hierarchy:
-
-```text
-agent.run
-|-- agent.intent.classify
-|-- agent.plan
-|-- tool.customer_profile
-|   `-- HTTP GET
-|-- tool.risk_assessment
-|   `-- HTTP POST
-|-- guardrail.lending_response
-|-- evaluation.task_completion
-|-- evaluation.tool_execution
-|-- evaluation.policy_compliance
-|-- evaluation.fallback_effectiveness
-`-- agent.response
-```
-
-Additional FastAPI and HTTP spans may appear because framework-level auto-instrumentation is enabled.
+Refresh the Operations Console and verify that the session appears with the generated session and trace IDs.
 
 ---
 
 ## Scenario 2: Risk Assessment Timeout
 
-Before running the scenario, predict the expected behavior:
-
-```text
-Customer Profile API     PASS
-Risk Assessment API      FAIL
-Fallback                 ACTIVATED
-Task completion          DEGRADED
-Tool execution           FAIL
-Policy compliance        PASS
-Customer outcome         DEGRADED BUT SAFE
-```
-
-Execute:
-
 ```bash
 ./scripts/timeout-run.sh
 ```
 
-Expected response characteristics:
-
-- Overall status is `degraded`.
-- Risk Assessment fails because the configured client timeout is exceeded.
-- The customer receives a manual-review response.
-- Tool execution evaluates to `fail`.
-- Task completion evaluates to `degraded`.
-- Policy compliance remains `pass`.
-
-In Jaeger, inspect `tool.risk_assessment` and verify:
-
-- Error status
-- Timeout duration
-- Error type
-- Healthy Customer Profile span
-- Agent fallback span
-- Safe final response
-
----
-
-## Reliability Insight
-
-A technical dependency failure does not automatically mean the agent behaved unsafely.
+Expected result:
 
 ```text
-Risk API                    FAILED
-Tool execution              FAILED
-Task completion             DEGRADED
-Policy compliance           PASSED
-Fallback effectiveness      PASSED
-Customer outcome            SAFE ESCALATION
+Customer Profile API     SUCCESS
+Risk Assessment API      TIMEOUT
+Tool execution           FAIL
+Fallback                 SUCCESS
+Policy compliance        PASS
+Task completion          DEGRADED
+Customer outcome         SAFE ESCALATION
 ```
 
-This project treats reliability as more than infrastructure availability:
+In the Operations Console:
 
-> **AI agent reliability = system reliability + agent behavior + quality evaluation + safe business outcome.**
+1. Open **Sessions**.
+2. Select the timeout session.
+3. Review the execution timeline.
+4. Review the mixed evaluation outcome.
+5. Use the trace ID to correlate the session with Jaeger.
+
+In Jaeger, inspect the Risk Assessment tool span and identify the critical latency and error evidence.
 
 ---
 
 ## Inspect Stored Evidence
 
-### List sessions
+List sessions:
 
 ```bash
 curl -sS http://localhost:8000/sessions | python3 -m json.tool
 ```
 
-### Retrieve one session
-
-```bash
-curl -sS http://localhost:8000/sessions/SESSION_ID | python3 -m json.tool
-```
-
-### Retrieve the execution timeline
+Retrieve the session timeline:
 
 ```bash
 curl -sS \
@@ -679,7 +542,7 @@ curl -sS \
   | python3 -m json.tool
 ```
 
-### Retrieve evaluation results
+Retrieve evaluations:
 
 ```bash
 curl -sS \
@@ -687,58 +550,27 @@ curl -sS \
   | python3 -m json.tool
 ```
 
-Replace `SESSION_ID` with the identifier returned by `/agent/run`.
-
-This evidence is persisted independently from Jaeger.
-
 ---
 
-## Historical Reconstruction
+## Reconstruction, Replay, and Counterfactual Analysis
 
-Run:
+### Historical reconstruction
+
+Question answered:
+
+> What happened?
 
 ```bash
 ./scripts/reconstruct.sh SESSION_ID
 ```
 
-Historical reconstruction reads recorded execution evidence and presents the ordered timeline:
-
-```text
-Customer Request
-      |
-      v
-Intent Classification
-      |
-      v
-Agent Plan
-      |
-      v
-Customer Profile API
-      |
-      v
-Risk Assessment API
-      |
-      v
-Failure or Success
-      |
-      v
-Fallback and Policy
-      |
-      v
-Final Response
-```
-
-Historical reconstruction does **not** call external services again. It answers:
-
-> What happened during the recorded interaction?
-
-It should not be confused with deterministic model re-execution.
-
----
-
-## Controlled and Counterfactual Replay
+Historical reconstruction reads persisted events and does not call external services.
 
 ### Controlled replay
+
+Question answered:
+
+> Can the decision be reproduced from captured evidence using the original policy?
 
 ```bash
 curl -sS -X POST \
@@ -748,124 +580,144 @@ curl -sS -X POST \
   | python3 -m json.tool
 ```
 
-Controlled replay re-applies the selected decision policy using recorded tool outcomes. It does not invoke the live Customer or Risk APIs.
-
 ### Counterfactual replay
+
+Question answered:
+
+> What would have happened if the policy had been different?
 
 ```bash
 ./scripts/counterfactual.sh SESSION_ID
 ```
 
-The counterfactual compares:
+A meaningful timeout comparison is:
 
 ```text
-ORIGINAL
+Original Policy v1
+Risk timeout → Manual review → DEGRADED
 
-Policy v1
-   |
-Risk API timeout
-   |
-Manual review
-   |
-DEGRADED
-
-
-COUNTERFACTUAL
-
-Policy v2
-   |
-Same recorded Risk API timeout
-   |
-Permitted cached classification
-   |
-Provisional response + mandatory review
-   |
-DEGRADED_SUCCESS
+Counterfactual Policy v2
+Same Risk timeout → Qualified provisional result + mandatory review
+→ DEGRADED_SUCCESS
 ```
 
-The original request and tool outcomes remain the same. Only the policy changes, enabling a controlled comparison of customer outcomes.
+Expected control evidence:
+
+```text
+same_recorded_tool_outcomes = true
+external_services_called    = false
+```
 
 ---
 
 ## Agent Evaluations
 
-The initial implementation uses transparent rule-based evaluators.
-
 ### Task completion
 
-Answers:
+Did the customer receive a verified result or approved escalation?
 
-> Did the customer receive a verified decision or an approved escalation path?
+Suggested scoring model:
 
-Possible labels:
-
-- `pass`
-- `degraded`
-- `fail`
+```text
+success             1.0
+Degraded success    0.8
+degraded            0.5
+failure             0.0
+```
 
 ### Tool execution
 
-Answers:
-
-> Did the required downstream tools complete successfully?
+Did required downstream tools complete successfully?
 
 ### Policy compliance
 
-Answers:
-
-> Did the agent avoid fabricating a lending decision when risk evidence was unavailable?
+Did the agent avoid fabricating approval or presenting an unverified outcome as final?
 
 ### Fallback effectiveness
 
-Answers:
+Did degraded execution still provide a usable next action?
 
-> Did degraded execution still provide a usable next action?
+Each result includes:
 
-Every evaluation includes:
-
-- Name
+- Evaluation name
 - Numeric score
 - Label
 - Explanation
 - Evaluator version
 
+Evaluator versioning is important because a changed score may result from a changed evaluator rather than a changed agent.
+
 ---
 
-## Telemetry Privacy
+## OpenTelemetry and Jaeger Validation
 
-Raw customer financial data is deliberately excluded from normal trace attributes.
+Check Collector status:
 
-Traces use a stable salted reference:
-
-```text
-app.customer.ref_hash
+```bash
+docker compose ps otel-collector
 ```
 
-The Collector also removes configured sensitive attribute names, including examples such as:
+Check OTLP listeners:
 
-```text
-customer.name
-customer.account_number
-customer.annual_income
-customer.credit_score
-gen_ai.input.messages
-gen_ai.output.messages
+```bash
+sudo ss -lntp | grep -E ':(4317|4318|13133)\b'
 ```
 
-### Trace backend versus replay store
+Generate telemetry:
 
-**Jaeger contains operational telemetry:**
+```bash
+./scripts/healthy-run.sh
+sleep 3
+docker compose logs otel-collector --since=30s
+```
 
-- Trace ID
-- Span names
-- Services
+The strongest validation is:
+
+```text
+Generate transaction
+       ↓
+Collector receives spans
+       ↓
+Jaeger displays the same trace
+```
+
+---
+
+## Reliability and SLO Notes
+
+The UI calculates an initial safe-outcome SLI:
+
+```text
+Success + Approved Degraded Outcomes
+------------------------------------
+Total Stored Sessions
+```
+
+The draft lab SLO is:
+
+> 97% of eligible loan-support interactions should produce either a verified decision or an approved safe escalation within the agreed latency threshold, with zero critical policy violations.
+
+This remains provisional because the current repository does not yet persist a complete measurement-window model or full request-latency SLI.
+
+---
+
+## Privacy Design
+
+Raw customer financial data is deliberately excluded from normal trace attributes. Traces use a stable salted customer-reference hash.
+
+The Collector also removes configured sensitive attribute names before exporting telemetry.
+
+### Jaeger should contain
+
+- Trace and span identifiers
+- Service and operation names
 - Duration
-- Error category
+- Error type
 - Tool name
 - HTTP status
-- Hashed correlation ID
+- Hashed correlation reference
 
-**PostgreSQL contains controlled replay evidence:**
+### PostgreSQL replay evidence may contain
 
 - Session and conversation references
 - Agent and policy versions
@@ -875,34 +727,24 @@ gen_ai.output.messages
 - Historical outcome
 - Replay comparisons
 
-The current lab database is not production hardened. A production implementation requires encryption, RBAC, key management, purpose-based access, data classification, retention, and deletion controls.
+The replay store is not production hardened. A real implementation needs encryption, RBAC, key management, data classification, retention, and deletion controls.
 
 ---
 
 ## Automated Tests
 
-The repository includes lightweight unit tests for policy and replay behavior.
-
-Create a local virtual environment:
-
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r tests/requirements.txt
-```
-
-Run:
-
-```bash
 pytest -q
 ```
 
-The tests currently validate:
+Syntax-only validation:
 
-- Policy v1 produces safe degradation after a timeout.
-- Policy v2 produces a qualified provisional response.
-- Historical reconstruction performs no external calls.
-- Counterfactual replay reuses recorded tool outcomes.
+```bash
+python3 -m compileall -q agent && echo "Python syntax: PASS"
+```
 
 ---
 
@@ -910,15 +752,11 @@ The tests currently validate:
 
 ### Script permission denied
 
-Files copied from Windows may not retain executable permissions.
-
 ```bash
 chmod +x scripts/*.sh
 ```
 
 ### `python: command not found`
-
-Use `python3` on Ubuntu:
 
 ```bash
 sed -i 's/python -m json.tool/python3 -m json.tool/g' scripts/*.sh
@@ -926,9 +764,7 @@ sed -i 's/python -m json.tool/python3 -m json.tool/g' scripts/*.sh
 
 ### JSON formatter reports `Expecting value`
 
-This usually means the upstream HTTP request returned an empty or non-JSON error response.
-
-Check service health:
+Inspect the unformatted HTTP response:
 
 ```bash
 curl -i http://localhost:8000/health
@@ -940,153 +776,167 @@ Inspect agent logs:
 docker compose logs agent --tail=100
 ```
 
-Run the request without JSON formatting to see the raw HTTP response:
+### PostgreSQL foreign-key violation for evaluations
 
-```bash
-curl -i -X POST http://localhost:8000/agent/run \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "customer_reference":"CUST-98421",
-    "conversation_id":"conv-debug-001",
-    "query":"Please check whether I can increase my personal loan limit from 20000 to 45000.",
-    "requested_limit":45000,
-    "failure_mode":"none",
-    "policy_version":"1.0.0"
-  }'
-```
-
-### PostgreSQL foreign-key violation while inserting evaluations
-
-If evaluations are inserted before the parent session becomes visible, PostgreSQL can reject the transaction.
-
-The session must be added and flushed before inserting dependent events and evaluations:
+The parent session must be flushed before inserting child event and evaluation records:
 
 ```python
 db.add(session_record)
 db.flush()
-
-# Insert execution events and evaluations after the parent row exists.
 ```
 
-After changing agent code, rebuild only the agent container:
+Rebuild the agent after changing application code:
 
 ```bash
 docker compose up -d --build agent
 ```
 
-### Risk service unavailable
+### UI does not open
 
-Stop the service:
+Verify the static file:
 
 ```bash
-docker compose stop risk-api
+ls -lh agent/app/static/index.html
 ```
 
-Execute a request and inspect whether the agent distinguishes dependency unavailability from timeout behavior.
-
-Restart:
+Verify the route:
 
 ```bash
-docker compose start risk-api
+curl -I http://localhost:8000/ui/
 ```
 
-### Collector unavailable
+Inspect logs:
 
 ```bash
-docker compose stop otel-collector
+docker compose logs agent --tail=100
+```
+
+Rebuild:
+
+```bash
+docker compose up -d --build agent
+```
+
+### UI loads but contains no data
+
+Generate sessions:
+
+```bash
 ./scripts/healthy-run.sh
-docker compose start otel-collector
+./scripts/timeout-run.sh
 ```
 
-The business transaction should remain independent from telemetry availability, although trace delivery may be lost in this development configuration.
-
-### View all runtime logs
-
-```bash
-docker compose logs -f agent customer-api risk-api otel-collector jaeger postgres
-```
+Then refresh the UI.
 
 ---
 
 ## Acceptance Criteria
 
-The initial implementation is complete when:
-
 - [ ] All six containers start successfully.
 - [ ] PostgreSQL reports healthy.
-- [ ] All three application health endpoints return HTTP 200.
-- [ ] A healthy request returns `success`.
-- [ ] One request produces one correlated distributed trace.
-- [ ] The Collector receives and exports telemetry.
-- [ ] Jaeger displays agent, tool, and API spans.
-- [ ] A controlled Risk timeout produces an error span.
-- [ ] The customer receives a safe degraded response.
-- [ ] Task, tool, policy, and fallback evaluations are persisted.
-- [ ] The timeline can be reconstructed without calling live tools.
-- [ ] Policy v2 can be compared against the original Policy v1 result.
+- [ ] The application health endpoints return HTTP 200.
+- [ ] The Operations Console loads from `/ui/`.
+- [ ] The Session Explorer shows persisted sessions.
+- [ ] A healthy run returns `success`.
+- [ ] A timeout run returns `degraded` safely.
+- [ ] Jaeger displays a correlated distributed trace.
+- [ ] The Risk timeout appears as a failed tool span.
+- [ ] Evaluations are shown in the UI.
+- [ ] Reconstruction does not call external services.
+- [ ] Controlled replay uses recorded tool outcomes.
+- [ ] Counterfactual Policy v2 produces a comparison.
 - [ ] Raw customer financial data is absent from normal trace attributes.
-- [ ] The operator can explain the complete architecture without reading the code.
-
-See `docs/ACCEPTANCE-CRITERIA.md` for the shorter project checklist.
+- [ ] The operator can explain the architecture and evidence flow without reading the code.
 
 ---
 
 ## Current Limitations
 
 - The initial agent is deterministic and rule-based rather than LLM-driven.
-- All banking data and services are simulated.
+- Banking data and services are simulated.
 - Authentication and authorization are not implemented.
+- The UI is intended for a trusted lab environment.
 - Replay artifacts are not encrypted with production key management.
 - High availability and horizontal scaling are not implemented.
 - Production retention and deletion policies are not enforced.
 - Replay is policy re-execution using captured state, not full deterministic model replay.
-- RCA is evidence-driven and operator-led rather than AI-generated.
-- Fault injection is application-controlled rather than managed by a chaos-engineering platform.
+- RCA is operator-led rather than AI-generated.
 - Deployment uses Docker Compose rather than Kubernetes.
-- Telemetry buffering and delivery guarantees are development-grade.
-
-This project should be described as a **production-oriented reference architecture and hands-on implementation**, not as a production-ready banking platform.
+- The SLO view is provisional and based on the current stored session set.
 
 ---
 
 ## Roadmap
 
-### Phase 2: Real model integration
+### Phase 2: Deeper reliability evidence
 
-- Add a real or local LLM provider
+- Store end-to-end transaction latency
+- Add fixed SLI measurement windows
+- Aggregate policy-compliance evaluations
+- Add error-budget calculation
+- Add filters by agent, policy, evaluator, and failure mode
+
+### Phase 3: Real model integration
+
+- Add an LLM provider
 - Trace model invocation and token usage
 - Record model and prompt versions
-- Add output grounding and response-quality evaluations
-- Define token and cost SLIs
+- Add groundedness and response-quality evaluations
+- Measure cost per successful task
 
-### Phase 3: Evaluation release gate
+### Phase 4: Evaluation release gate
 
-- Build a version-controlled golden dataset
-- Compare Agent v17 and v18
+- Build a golden dataset
+- Compare agent versions
 - Add deterministic and model-assisted evaluators
-- Add DeepEval
-- Integrate evaluation checks with CI/CD
-- Generate automated PASS/BLOCK release decisions
-
-### Phase 4: RAG reliability
-
-- Add retrieval and vector-search components
-- Trace query, retrieval, context, and generation
-- Measure retrieval relevance and groundedness
-- Add Ragas-based evaluation
-- Introduce controlled retrieval degradation
-- Correlate quality regressions with version changes
+- Integrate CI/CD PASS/BLOCK gates
+- Retain release evidence
 
 ### Phase 5: Enterprise hardening
 
-- Authentication and role-based access
+- Authentication and RBAC
 - TLS and mTLS
 - Secret management
 - Encrypted replay storage
 - Retention and deletion controls
 - Kubernetes deployment
-- Scalable Collector gateway pattern
+- Scalable regional Collector gateways
 - Production alerting and incident integration
+
+---
+
+## Git Workflow
+
+Review changes:
+
+```bash
+git status
+git diff
+```
+
+Validate:
+
+```bash
+python3 -m compileall -q agent
+pytest -q
+```
+
+Stage and commit:
+
+```bash
+git add README.md agent/app/main.py agent/app/static/index.html
+git diff --cached
+git commit -m "Add AI reliability operations console and documentation"
+```
+
+Synchronize safely:
+
+```bash
+git pull --rebase origin main
+git push origin main
+```
+
+Do not use `git push --force` merely to bypass a non-fast-forward rejection.
 
 ---
 
@@ -1094,42 +944,27 @@ This project should be described as a **production-oriented reference architectu
 
 The goal is not to demonstrate another AI chatbot.
 
-The objective is to explore the operational engineering required to run AI agents reliably in enterprise environments:
-
-- How do we observe what an agent actually did?
-- How do we identify the component responsible for failure?
-- How do we distinguish technical success from business-task success?
-- How do we evaluate agent behavior independently from infrastructure health?
-- How do we reconstruct historical interactions?
-- How do we test whether a proposed policy improves the outcome?
-- How do we prevent observability from becoming another repository of sensitive enterprise data?
-
-The operating lifecycle demonstrated by this repository is:
+The objective is to explore the operational engineering required to make enterprise AI systems observable, evaluable, diagnosable, replayable, and reliable:
 
 ```text
 Observe
-   |
+   ↓
 Evaluate
-   |
+   ↓
 Diagnose
-   |
+   ↓
 Reconstruct
-   |
-Improve
-   |
-Verify
+   ↓
+Replay
+   ↓
+Test a remediation
+   ↓
+Measure improvement
+   ↓
+Decide whether reliability is acceptable
 ```
 
-This reference implementation explores the intersection of:
-
-- Enterprise Architecture
-- Site Reliability Engineering
-- OpenTelemetry
-- Distributed tracing
-- AI Agent Reliability
-- Agent Observability
-- AI Evaluation
-- Replay and counterfactual analysis
+This project explores the intersection of Enterprise Architecture, SRE, OpenTelemetry, distributed tracing, AI Agent Reliability, AI Evaluation, and counterfactual analysis.
 
 ---
 
