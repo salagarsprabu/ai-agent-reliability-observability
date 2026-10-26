@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 import uuid
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from opentelemetry import trace
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from sqlalchemy import select
@@ -159,3 +161,11 @@ def replay_comparison(replay_id: str):
         if not row:
             raise HTTPException(404, "Replay not found")
         return row.comparison_result
+
+
+@app.get("/", include_in_schema=False)
+def root_ui():
+    return RedirectResponse(url="/ui/")
+
+
+app.mount("/ui", StaticFiles(directory="app/static", html=True), name="ui")
