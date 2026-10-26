@@ -2,7 +2,11 @@
 
 A production-oriented reference implementation showing how an enterprise AI agent can be **observed, diagnosed, evaluated, reconstructed, replayed, and tested for resilience**.
 
-We implemented an end-to-end AI Reliability reference architecture that separates agent execution, observability, evaluation and replay concerns. Each agent transaction is correlated through OpenTelemetry, investigated through distributed tracing, evaluated independently for business and policy outcomes, and persisted with sufficient evidence for reconstruction and controlled replay. Historical failures can be replayed under alternative policies to determine whether a proposed resilience change improves the customer outcome without re-invoking production dependencies. The design establishes the foundation for AI-specific SLIs/SLOs, auditability, release-quality gates and enterprise AI operations.”
+Provides an end-to-end AI Reliability reference architecture that separates **agent execution, observability, evaluation and replay concerns**. Each agent transaction is correlated through OpenTelemetry, investigated through distributed tracing, evaluated independently for business and policy outcomes, and persisted with sufficient evidence for reconstruction and controlled replay. Historical failures can be replayed under alternative policies to determine whether a proposed resilience change improves the customer outcome without re-invoking production dependencies. 
+
+**Fallback** provides controlled resilience when an agent dependency or execution step fails, preserving a safe business journey where possible. **Evaluators** independently assess whether the resulting technical and business behavior met expected task, tool, policy and recovery criteria. Together, they allow the enterprise to distinguish infrastructure failure from agent failure and safe degradation from unacceptable failure.
+
+The design establishes the foundation for AI-specific SLIs/SLOs, auditability, release-quality gates and enterprise AI operations.
 
 > **Project status:** Hands-on reference implementation for learning and architecture validation. This is not a production banking platform.
 
